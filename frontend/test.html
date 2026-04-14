@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Test</title>
+</head>
+<body>
+  <h2>WebSocket Status</h2>
+  <pre id="log"></pre>
+
+  <script>
+    const log = document.getElementById("log");
+    const ws = new WebSocket("ws://localhost:8000/ws");
+
+    ws.onopen = () => {
+      log.innerText += "✅ WebSocket connected\n";
+    };
+
+    ws.onmessage = (event) => {
+      log.innerText += "📩 " + event.data + "\n";
+    };
+
+    ws.onerror = (err) => {
+      log.innerText += "❌ WebSocket error\n";
+      console.error(err);
+    };
+
+    ws.onclose = () => {
+      log.innerText += "🔌 WebSocket closed\n";
+    };
+  </script>
+</body>
+</html>
