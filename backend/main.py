@@ -3,9 +3,8 @@ from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import random
-
 from events import normalize_event
-from processor import process_event, timeline
+from processor import process_event, timeline, get_metrics  # CHANGED: import get_metrics
 
 app = FastAPI()
 
@@ -13,6 +12,11 @@ app = FastAPI()
 @app.get("/")
 def root():
     return {"status": "Backend running"}
+
+# --- NEW: metrics endpoint ---
+@app.get("/metrics")
+def metrics():
+    return get_metrics()
 
 # ---------------- CORS ----------------
 app.add_middleware(
@@ -39,10 +43,8 @@ async def websocket_endpoint(websocket: WebSocket):
 async def generate_mock_events():
     cameras = ["CAM_01", "CAM_02", "CAM_03"]
     event_types = ["PERSON_DETECTED", "DWELL_UPDATE", "ENGAGEMENT", "HANDOFF"]
-
     while True:
         await asyncio.sleep(random.uniform(0.5, 2))
-
         raw_event = {
             "cam": random.choice(cameras),
             "time": datetime.now().isoformat(),
@@ -50,14 +52,12 @@ async def generate_mock_events():
             "track_id": random.randint(100, 105),
             "details": {"dwell_time": random.randint(1, 10)}
         }
-
         event = normalize_event(raw_event)
         processed = process_event(event)
-
         if processed:
             for client in clients[:]:
                 try:
-                    await client.send_json(processed)  # ✅ SINGLE EVENT
+                    await client.send_json(processed)
                 except:
                     clients.remove(client)
 
