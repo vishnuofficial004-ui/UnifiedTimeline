@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import random
+import time  # NEW
 from events import normalize_event
 from processor import process_event, timeline, get_metrics
 
@@ -17,6 +18,18 @@ def root():
 @app.get("/metrics")
 def metrics():
     return get_metrics()
+
+# NEW: separate latency metrics endpoint
+@app.get("/latency")
+def latency_stats():
+    if not latency_samples:
+        return {"samples": 0, "avg_ms": 0, "max_ms": 0, "min_ms": 0}
+    return {
+        "samples": len(latency_samples),
+        "avg_ms": round(sum(latency_samples) / len(latency_samples), 2),
+        "max_ms": round(max(latency_samples), 2),
+        "min_ms": round(min(latency_samples), 2)
+    }
 
 # ---------------- CORS ----------------
 app.add_middleware(
@@ -40,25 +53,28 @@ async def websocket_endpoint(websocket: WebSocket):
         clients.remove(websocket)
 
 # ---------------- MOCK VISION AI EVENTS ----------------
-# NEW: configurable feed count
-NUM_CAMERA_FEEDS = 20  # within your claimed 15-25 range
-
+NUM_CAMERA_FEEDS = 20
 event_types = ["PERSON_DETECTED", "DWELL_UPDATE", "ENGAGEMENT", "HANDOFF"]
 
+# NEW: rolling latency samples (capped so memory doesn't grow forever)
+latency_samples = []
+MAX_LATENCY_SAMPLES = 500
+
 async def broadcast(processed):
-    """NEW: extracted broadcast so each camera task can reuse it"""
+    """Send event to all clients and record delivery latency per send."""
+    gen_time = processed.pop("_gen_time_monotonic", None)  # NEW: pull internal timing field
     for client in clients[:]:
         try:
             await client.send_json(processed)
+            if gen_time is not None:  # NEW
+                elapsed_ms = (time.monotonic() - gen_time) * 1000
+                latency_samples.append(elapsed_ms)
+                if len(latency_samples) > MAX_LATENCY_SAMPLES:
+                    latency_samples.pop(0)
         except:
             clients.remove(client)
 
 async def camera_feed_task(cam_id: str):
-    """
-    NEW: Each camera now runs as its own independent async task,
-    generating events on its own timer — this is what makes the
-    feeds genuinely concurrent instead of one shared loop.
-    """
     while True:
         await asyncio.sleep(random.uniform(0.5, 2))
         raw_event = {
@@ -71,12 +87,12 @@ async def camera_feed_task(cam_id: str):
         event = normalize_event(raw_event)
         processed = process_event(event)
         if processed:
+            processed["_gen_time_monotonic"] = time.monotonic()  # NEW: stamp right before send
             await broadcast(processed)
 
 # ---------------- STARTUP ----------------
 @app.on_event("startup")
 async def startup_event():
-    # NEW: spin up one independent task per camera feed
     for i in range(1, NUM_CAMERA_FEEDS + 1):
         cam_id = f"CAM_{i:02d}"
         asyncio.create_task(camera_feed_task(cam_id))
