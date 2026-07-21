@@ -29,6 +29,33 @@ def latency_stats():
         "min_ms": round(min(latency_samples), 2)
     }
 
+# NEW: trigger a burst of simultaneous events across all cameras
+@app.post("/simulate/burst")
+async def simulate_burst(events_per_camera: int = 5):
+    """
+    Fire events_per_camera events from EVERY camera feed all at once,
+    to simulate peak traffic instead of steady trickle load.
+    Returns latency stats measured only during this burst.
+    """
+    start_index = len(latency_samples)
+    tasks = []
+    for i in range(1, NUM_CAMERA_FEEDS + 1):
+        cam_id = f"CAM_{i:02d}"
+        for _ in range(events_per_camera):
+            tasks.append(fire_single_event(cam_id))
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    burst_samples = latency_samples[start_index:]
+    if not burst_samples:
+        return {"events_fired": len(tasks), "burst_samples": 0, "avg_ms": 0, "max_ms": 0}
+    return {
+        "events_fired": len(tasks),
+        "burst_samples": len(burst_samples),
+        "avg_ms": round(sum(burst_samples) / len(burst_samples), 2),
+        "max_ms": round(max(burst_samples), 2),
+        "min_ms": round(min(burst_samples), 2)
+    }
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,10 +79,9 @@ NUM_CAMERA_FEEDS = 20
 event_types = ["PERSON_DETECTED", "DWELL_UPDATE", "ENGAGEMENT", "HANDOFF"]
 
 latency_samples = []
-MAX_LATENCY_SAMPLES = 500
+MAX_LATENCY_SAMPLES = 2000  # NEW: raised cap since bursts generate many samples fast
 
 async def send_to_client(client: WebSocket, processed: dict, gen_time):
-    """NEW: isolated per-client send so one slow/dead client can't block others"""
     try:
         await client.send_json(processed)
         if gen_time is not None:
@@ -64,41 +90,38 @@ async def send_to_client(client: WebSocket, processed: dict, gen_time):
             if len(latency_samples) > MAX_LATENCY_SAMPLES:
                 latency_samples.pop(0)
     except Exception:
-        # NEW: mark for removal instead of mutating clients list mid-iteration
         if client in clients:
             clients.remove(client)
 
 async def broadcast(processed):
-    """
-    CHANGED: fire all client sends concurrently instead of sequentially.
-    Previously: for client in clients: await send(...)  -> serialized, one slow
-    client delays everyone after it.
-    Now: all sends launched together, function returns when the SLOWEST
-    one finishes, not the SUM of all of them.
-    """
     gen_time = processed.pop("_gen_time_monotonic", None)
     if not clients:
         return
     await asyncio.gather(
         *(send_to_client(client, processed, gen_time) for client in clients[:]),
-        return_exceptions=True  # NEW: one failing send won't crash the others
+        return_exceptions=True
     )
+
+async def fire_single_event(cam_id: str):
+    """NEW: extracted single-event generation so both the steady loop
+    and the burst simulator can reuse the exact same event path."""
+    raw_event = {
+        "cam": cam_id,
+        "time": datetime.now().isoformat(),
+        "type": random.choice(event_types),
+        "track_id": random.randint(100, 105),
+        "details": {"dwell_time": random.randint(1, 10)}
+    }
+    event = normalize_event(raw_event)
+    processed = process_event(event)
+    if processed:
+        processed["_gen_time_monotonic"] = time.monotonic()
+        await broadcast(processed)
 
 async def camera_feed_task(cam_id: str):
     while True:
         await asyncio.sleep(random.uniform(0.5, 2))
-        raw_event = {
-            "cam": cam_id,
-            "time": datetime.now().isoformat(),
-            "type": random.choice(event_types),
-            "track_id": random.randint(100, 105),
-            "details": {"dwell_time": random.randint(1, 10)}
-        }
-        event = normalize_event(raw_event)
-        processed = process_event(event)
-        if processed:
-            processed["_gen_time_monotonic"] = time.monotonic()
-            await broadcast(processed)
+        await fire_single_event(cam_id)  # CHANGED: reuse shared function
 
 @app.on_event("startup")
 async def startup_event():
