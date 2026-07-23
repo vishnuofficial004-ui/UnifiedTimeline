@@ -1,4 +1,3 @@
-# backend/main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +9,7 @@ from processor import process_event, timeline, get_metrics
 
 app = FastAPI()
 
+# ---------------- BASIC API ----------------
 @app.get("/")
 def root():
     return {"status": "Backend running"}
@@ -29,14 +29,8 @@ def latency_stats():
         "min_ms": round(min(latency_samples), 2)
     }
 
-# NEW: trigger a burst of simultaneous events across all cameras
 @app.post("/simulate/burst")
 async def simulate_burst(events_per_camera: int = 5):
-    """
-    Fire events_per_camera events from EVERY camera feed all at once,
-    to simulate peak traffic instead of steady trickle load.
-    Returns latency stats measured only during this burst.
-    """
     start_index = len(latency_samples)
     tasks = []
     for i in range(1, NUM_CAMERA_FEEDS + 1):
@@ -56,6 +50,7 @@ async def simulate_burst(events_per_camera: int = 5):
         "min_ms": round(min(burst_samples), 2)
     }
 
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -63,6 +58,7 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# ---------------- WEBSOCKET CLIENTS ----------------
 clients: list[WebSocket] = []
 
 @app.websocket("/ws")
@@ -75,15 +71,16 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         clients.remove(websocket)
 
+# ---------------- MOCK VISION AI EVENTS ----------------
 NUM_CAMERA_FEEDS = 20
 event_types = ["PERSON_DETECTED", "DWELL_UPDATE", "ENGAGEMENT", "HANDOFF"]
 
 latency_samples = []
-MAX_LATENCY_SAMPLES = 2000  # NEW: raised cap since bursts generate many samples fast
+MAX_LATENCY_SAMPLES = 2000
 
-async def send_to_client(client: WebSocket, processed: dict, gen_time):
+async def send_to_client(client: WebSocket, payload: dict, gen_time):
     try:
-        await client.send_json(processed)
+        await client.send_json(payload)
         if gen_time is not None:
             elapsed_ms = (time.monotonic() - gen_time) * 1000
             latency_samples.append(elapsed_ms)
@@ -93,18 +90,16 @@ async def send_to_client(client: WebSocket, processed: dict, gen_time):
         if client in clients:
             clients.remove(client)
 
-async def broadcast(processed):
-    gen_time = processed.pop("_gen_time_monotonic", None)
+async def broadcast(payload):
+    gen_time = payload.pop("_gen_time_monotonic", None)
     if not clients:
         return
     await asyncio.gather(
-        *(send_to_client(client, processed, gen_time) for client in clients[:]),
+        *(send_to_client(client, payload, gen_time) for client in clients[:]),
         return_exceptions=True
     )
 
 async def fire_single_event(cam_id: str):
-    """NEW: extracted single-event generation so both the steady loop
-    and the burst simulator can reuse the exact same event path."""
     raw_event = {
         "cam": cam_id,
         "time": datetime.now().isoformat(),
@@ -113,22 +108,25 @@ async def fire_single_event(cam_id: str):
         "details": {"dwell_time": random.randint(1, 10)}
     }
     event = normalize_event(raw_event)
-    processed = process_event(event)
+    processed, msg_type = process_event(event)  # CHANGED: unpack the tuple from step 10
     if processed:
-        processed["_gen_time_monotonic"] = time.monotonic()
-        await broadcast(processed)
+        payload = {**processed, "message_type": msg_type}  # NEW: tag payload so frontend knows NEW vs UPDATE
+        payload["_gen_time_monotonic"] = time.monotonic()
+        await broadcast(payload)
 
 async def camera_feed_task(cam_id: str):
     while True:
         await asyncio.sleep(random.uniform(0.5, 2))
-        await fire_single_event(cam_id)  # CHANGED: reuse shared function
+        await fire_single_event(cam_id)
 
+# ---------------- STARTUP ----------------
 @app.on_event("startup")
 async def startup_event():
     for i in range(1, NUM_CAMERA_FEEDS + 1):
         cam_id = f"CAM_{i:02d}"
         asyncio.create_task(camera_feed_task(cam_id))
 
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
