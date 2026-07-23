@@ -8,11 +8,9 @@
       margin: 20px;
       background-color: #6ca03bff;
     }
-
     h2 {
       text-align: center;
     }
-
     #timeline {
       margin-top: 20px;
       max-width: 800px;
@@ -26,7 +24,6 @@
       overflow-y: auto;
       box-shadow: 0 2px 5px rgba(0,0,0,0.1);
     }
-
     .event {
       padding: 8px;
       margin-bottom: 5px;
@@ -37,8 +34,6 @@
       justify-content: space-between;
       align-items: center;
     }
-
-    /* Event type colors */
     .PERSON_DETECTED { background-color: #007bff; }
     .DWELL_UPDATE { background-color: #28a745; }
     .ENGAGEMENT { background-color: #ffc107; color: #000; }
@@ -46,51 +41,52 @@
   </style>
 </head>
 <body>
-
 <h2>Live Vision AI Unified Timeline</h2>
 <div id="timeline"></div>
-
 <script>
   const timeline = document.getElementById("timeline");
-
-  // Connect WebSocket
   const socket = new WebSocket("ws://127.0.0.1:8000/ws");
+  const renderedEvents = {}; // NEW: track rendered DOM nodes by event_id, so UPDATE can find them
 
   socket.onopen = () => {
     console.log("WebSocket connected");
   };
-
   socket.onerror = (err) => {
     console.error("WebSocket error:", err);
   };
 
   socket.onmessage = (event) => {
     const e = JSON.parse(event.data);
-
-    // Normalize keys for safety
-    const timestamp = e.timestamp || e.time || "N/A";
-    const camera = e.camera_id || e.cam || "N/A";
-    const person = e.person_id || e.track_id || "N/A";
-    const type = e.event_type || e.type || "UNKNOWN";
+    const timestamp = e.timestamp || "N/A";
+    const camera = e.camera_id || "N/A";
+    const person = e.person_id || "N/A";
+    const type = e.event_type || "UNKNOWN";
     const dwell = e.details?.dwell_time || 0;
+    const mergedCount = e.details?.merged_count || 1;
 
-    // Create event div
+    // NEW: if this is an UPDATE to an already-rendered event, patch it instead of creating a new row
+    if (e.message_type === "UPDATE" && renderedEvents[e.event_id]) {
+      const div = renderedEvents[e.event_id];
+      div.querySelector(".dwell-span").innerText = `Dwell: ${dwell}s (x${mergedCount})`;
+      return;
+    }
+
     const div = document.createElement("div");
-    div.className = `event ${type}`; // class for color coding
+    div.className = `event ${type}`;
+    div.dataset.eventId = e.event_id; // NEW: store event_id on the node itself for later cleanup
     div.innerHTML = `
       <span>${timestamp} — ${type} (Camera: ${camera}) [Person: ${person}]</span>
-      <span>Dwell: ${dwell}s</span>
+      <span class="dwell-span">Dwell: ${dwell}s (x${mergedCount})</span>
     `;
-
-    // Prepend new event
     timeline.prepend(div);
+    renderedEvents[e.event_id] = div; // NEW: register this node so future UPDATEs can find it
 
-    // Optional: limit to last 50 events
     if (timeline.childNodes.length > 50) {
-      timeline.removeChild(timeline.lastChild);
+      const removed = timeline.lastChild;
+      timeline.removeChild(removed);
+      delete renderedEvents[removed.dataset.eventId]; // NEW: clean up map entry so it doesn't grow forever
     }
   };
 </script>
-
 </body>
 </html>
