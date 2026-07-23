@@ -1,4 +1,3 @@
-# backend/processor.py
 from datetime import datetime, timedelta
 
 # In-memory timeline
@@ -7,10 +6,10 @@ timeline = []
 # Last seen dict for dedup window tracking
 last_seen = {}  # key: (person_id, event_type), value: timestamp
 
-# NEW: track the actual event object that's currently "active" for a key,
-# so repeated events can be merged into it instead of just discarded
+# Track the "active" event object per key so repeats can be merged into it
 active_events = {}  # key: (person_id, event_type), value: event dict
 
+# Per-event-type dedup windows (seconds)
 DEDUP_WINDOWS = {
     "PERSON_DETECTED": 5,
     "DWELL_UPDATE": 2,
@@ -23,14 +22,18 @@ metrics = {
     "total_events_received": 0,
     "events_deduplicated": 0,
     "events_forwarded": 0,
-    "events_aggregated": 0  # NEW
+    "events_aggregated": 0
 }
+
 
 def process_event(event, dedup_seconds=None):
     """
     Deduplicate + aggregate events within the dedup window.
-    Instead of silently dropping duplicates, merge relevant fields
-    (e.g. dwell_time, occurrence count) into the active event.
+
+    Returns a tuple: (payload, message_type)
+      - (event dict, "NEW")    -> fresh event, first of its kind in this window
+      - (event dict, "UPDATE") -> aggregated merge of a duplicate into the active event
+      - (None, None)           -> nothing to send
     """
     metrics["total_events_received"] += 1
 
@@ -41,29 +44,27 @@ def process_event(event, dedup_seconds=None):
     window = dedup_seconds if dedup_seconds is not None else DEDUP_WINDOWS.get(event_type, DEFAULT_DEDUP_SECONDS)
 
     if key in last_seen and ts - last_seen[key] < timedelta(seconds=window):
-        # NEW: within window -> aggregate instead of just dropping
         metrics["events_deduplicated"] += 1
         metrics["events_aggregated"] += 1
 
         active = active_events.get(key)
         if active:
-            # Merge dwell_time (sum) as an example aggregation rule
             incoming_dwell = event.get("details", {}).get("dwell_time", 0)
             active["details"]["dwell_time"] = active["details"].get("dwell_time", 0) + incoming_dwell
             active["details"]["merged_count"] = active["details"].get("merged_count", 1) + 1
-            active["timestamp"] = event["timestamp"]  # bump to latest timestamp
-        return None
+            active["timestamp"] = event["timestamp"]
+            return active, "UPDATE"
+        return None, None
 
-    # New window starts: this event becomes the "active" one for this key
     last_seen[key] = ts
-    event["details"]["merged_count"] = 1  # NEW: track how many events this represents
+    event["details"]["merged_count"] = 1
     active_events[key] = event
 
     timeline.append(event)
     timeline.sort(key=lambda x: x["timestamp"])
 
     metrics["events_forwarded"] += 1
-    return event
+    return event, "NEW"
 
 
 def get_metrics():
