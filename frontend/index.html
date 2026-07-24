@@ -46,7 +46,7 @@
 <script>
   const timeline = document.getElementById("timeline");
   const socket = new WebSocket("ws://127.0.0.1:8000/ws");
-  const renderedEvents = {}; // NEW: track rendered DOM nodes by event_id, so UPDATE can find them
+  const renderedEvents = {}; // track rendered DOM nodes by event_id
 
   socket.onopen = () => {
     console.log("WebSocket connected");
@@ -64,7 +64,11 @@
     const dwell = e.details?.dwell_time || 0;
     const mergedCount = e.details?.merged_count || 1;
 
-    // NEW: if this is an UPDATE to an already-rendered event, patch it instead of creating a new row
+    // NEW: immediately ack receipt so the server can measure true round-trip latency
+    if (e.event_id && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "ack", event_id: e.event_id }));
+    }
+
     if (e.message_type === "UPDATE" && renderedEvents[e.event_id]) {
       const div = renderedEvents[e.event_id];
       div.querySelector(".dwell-span").innerText = `Dwell: ${dwell}s (x${mergedCount})`;
@@ -73,18 +77,18 @@
 
     const div = document.createElement("div");
     div.className = `event ${type}`;
-    div.dataset.eventId = e.event_id; // NEW: store event_id on the node itself for later cleanup
+    div.dataset.eventId = e.event_id;
     div.innerHTML = `
       <span>${timestamp} — ${type} (Camera: ${camera}) [Person: ${person}]</span>
       <span class="dwell-span">Dwell: ${dwell}s (x${mergedCount})</span>
     `;
     timeline.prepend(div);
-    renderedEvents[e.event_id] = div; // NEW: register this node so future UPDATEs can find it
+    renderedEvents[e.event_id] = div;
 
     if (timeline.childNodes.length > 50) {
       const removed = timeline.lastChild;
       timeline.removeChild(removed);
-      delete renderedEvents[removed.dataset.eventId]; // NEW: clean up map entry so it doesn't grow forever
+      delete renderedEvents[removed.dataset.eventId];
     }
   };
 </script>
