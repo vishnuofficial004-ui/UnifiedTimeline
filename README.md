@@ -50,7 +50,7 @@ Ran this locally a bunch of times:
 - Dedup/aggregation cut down forwarded events by ~50% (got 49.5-49.7% across different runs, over 5000+ events)
 - End to end latency averaged under 2ms, maxed out at 16ms across 2000 samples (including a burst test)
 
-Worth mentioning — this was all tested on localhost, client and server on the same machine. So no real network involved, which is obviously why the latency numbers are this low. Would need to test across actual devices/network to get numbers that mean something for a real deployment.
+This was all tested on localhost, client and server on the same machine. So no real network involved, which is obviously why the latency numbers are this low. Would need to test across actual devices/network to get numbers that mean something for a real deployment.
 
 ## What's not done / what I'd fix next
 
